@@ -8,13 +8,14 @@ from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 
 from shared.pagination import StandardResultsSetPagination
-from shared.permissions import IsPatient
+from shared.permissions import IsPatient, IsDoctor
 
 from apps.appointments.models import Appointment
 from apps.appointments.serializers import (
     AppointmentReadSerializer,
     AppointmentWriteSerializer,
     AppointmentUpdateSerializer,
+    DoctorAppointmentReadSerializer,
 )
 
 
@@ -109,3 +110,23 @@ class PatientAppointmentDetailView(generics.UpdateAPIView):
             context={"request": request},
         )
         return Response(read_serializer.data)
+
+
+class DoctorAppointmentListView(generics.ListAPIView):
+    """List appointments for the authenticated doctor.
+
+    GET: Returns all appointments where doctor=request.user.
+    Includes nested patient information.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, IsDoctor]
+    serializer_class = DoctorAppointmentReadSerializer
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        """Return only appointments owned by the current doctor."""
+        return (
+            Appointment.objects.filter(doctor=self.request.user)
+            .select_related("patient")
+            .order_by("-date", "-time")
+        )

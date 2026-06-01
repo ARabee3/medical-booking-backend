@@ -134,3 +134,31 @@ class AppointmentUpdateSerializer(serializers.Serializer):
             )
 
         return attrs
+
+
+class AppointmentPatientSerializer(serializers.Serializer):
+    """Read-only nested patient object embedded in doctor appointment responses."""
+
+    id = serializers.IntegerField(source="pk")
+    name = serializers.SerializerMethodField()
+    email = serializers.EmailField()
+
+    def get_name(self, obj):
+        """Return formatted display name."""
+        return f"{obj.first_name} {obj.last_name}"
+
+
+class DoctorAppointmentReadSerializer(serializers.ModelSerializer):
+    """Output serializer for doctor appointment list.
+
+    Produces the exact shape defined in docs/API_CONTRACT.md §Doctor Endpoints.
+    """
+
+    patient = AppointmentPatientSerializer(read_only=True)
+    time = serializers.TimeField(format="%H:%M", read_only=True)
+    date = serializers.DateField(format="%Y-%m-%d", read_only=True)
+
+    class Meta:
+        model = Appointment
+        fields = ["id", "patient", "date", "time", "status", "notes", "created_at"]
+        read_only_fields = ["id", "patient", "date", "time", "status", "notes", "created_at"]
