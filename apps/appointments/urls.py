@@ -1,21 +1,14 @@
-"""
-Appointments app URL configuration.
+# Third-party packages
+from rest_framework.routers import DefaultRouter
 
-Endpoints:
-- GET/POST /api/appointments/
-- PATCH /api/appointments/:id/
-- GET /api/doctor/appointments/
-- PATCH /api/doctor/appointments/:id/
-- POST /api/doctor/availability/
-- DELETE /api/doctor/availability/:id/
-"""
+# Local / project imports
+from apps.appointments.views import AvailabilityViewSet
 
-from django.urls import path
+router = DefaultRouter()
+router.register(
+    prefix="doctor/availability",
+    viewset=AvailabilityViewSet,
+    basename="availability",
+)
 
-# TODO: Import views once implemented
-
-urlpatterns = [
-    # path("appointments/", ...),
-    # path("doctor/appointments/", ...),
-    # path("doctor/availability/", ...),
-]
+urlpatterns = router.urls
