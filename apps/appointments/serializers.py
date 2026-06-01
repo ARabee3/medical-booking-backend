@@ -106,3 +106,31 @@ class AppointmentWriteSerializer(serializers.Serializer):
             date=validated_data["date"],
             time=validated_data["time"],
         )
+
+
+class AppointmentUpdateSerializer(serializers.Serializer):
+    """Input serializer for patient modifications — PATCH /api/appointments/:id/.
+
+    Accepts status="CANCELLED" to cancel, or date/time to reschedule.
+    """
+
+    status = serializers.ChoiceField(choices=["CANCELLED"], required=False)
+    date = serializers.DateField(required=False)
+    time = serializers.TimeField(input_formats=["%H:%M", "%H:%M:%S"], required=False)
+
+    def validate(self, attrs):
+        """Ensure either cancellation or rescheduling data is provided."""
+        has_status = "status" in attrs
+        has_reschedule = "date" in attrs and "time" in attrs
+
+        if not has_status and not has_reschedule:
+            raise ValidationError(
+                "Provide status='CANCELLED' to cancel, or both date and time to reschedule."
+            )
+            
+        if has_status and has_reschedule:
+             raise ValidationError(
+                "Cannot cancel and reschedule in the same request."
+            )
+
+        return attrs
