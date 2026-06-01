@@ -8,7 +8,6 @@ from django.db import transaction
 
 # Local / project imports
 from apps.users.models import User
-# ==== ❌ عملنا كومنت هنا عشان الموديلات دي مش موجودة لسه ====
 # from apps.doctors.models import DoctorProfile, Specialty, Availability
 # from apps.appointments.models import Appointment
 
@@ -104,7 +103,6 @@ class Command(BaseCommand):
         with transaction.atomic():
             self._purge_existing_data()
             
-            # ==== ❌ عملنا كومنت هنا للدوال اللي بتعتمد على جداول مش موجودة لسه ====
             # specialties = self._seed_specialties()
             
             admins      = self._seed_admins()
@@ -125,7 +123,6 @@ class Command(BaseCommand):
     def _purge_existing_data(self):
         self.stdout.write("🗑️  Purging existing demo data...")
 
-        # ==== ❌ عملنا كومنت هنا على حذف جداول المواعيد والدكاترة ====
         # deleted_appts, _ = Appointment.objects.all().delete()
         # deleted_avail, _ = Availability.objects.all().delete()
         # deleted_docs,  _ = DoctorProfile.objects.all().delete()
@@ -145,7 +142,6 @@ class Command(BaseCommand):
         )
 
     # ------------------------------------------------------------------
-    # Step 2 — Specialties (❌ عملنا كومنت على الدالة دي كلها)
     # ------------------------------------------------------------------
     # def _seed_specialties(self) -> dict[str, Specialty]:
     #     self.stdout.write("🏥  Ensuring specialties exist...")
@@ -189,7 +185,6 @@ class Command(BaseCommand):
         return admins
 
     # ------------------------------------------------------------------
-    # Step 4 — Doctors (❌ عملنا كومنت على الدالة دي والدالة المساعدة بتاعتها)
     # ------------------------------------------------------------------
     # def _seed_doctors(self, specialty_map: dict) -> list[DoctorProfile]:
     #     self.stdout.write("🩺  Creating doctor profiles...")
@@ -261,7 +256,6 @@ class Command(BaseCommand):
         return patients
 
     # ------------------------------------------------------------------
-    # Step 6 — Appointments (❌ عملنا كومنت على الدالة دي كلها)
     # ------------------------------------------------------------------
     # def _seed_appointments(self, doctors: list[DoctorProfile], patients: list[User]) -> None:
     #     today = date.today()
