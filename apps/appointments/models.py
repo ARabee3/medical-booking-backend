@@ -48,6 +48,8 @@ class Appointment(models.Model):
 
     class Meta:
         db_table = "appointments_appointment"
+        verbose_name_plural = "Appointments"
+        ordering = ["-date", "-created_at"]
         indexes = [
             models.Index(fields=["patient"]),
             models.Index(fields=["doctor"]),
