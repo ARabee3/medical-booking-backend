@@ -16,6 +16,7 @@ from apps.appointments.views import (
     PatientAppointmentListCreateView,
     PatientAppointmentDetailView,
     DoctorAppointmentListView,
+    DoctorAppointmentDetailView,
 )
 
 urlpatterns = [
@@ -25,7 +26,8 @@ urlpatterns = [
     path("appointments/<int:pk>/", PatientAppointmentDetailView.as_view(), name="appointment-detail"),
     # BE-013: Doctor appointment list
     path("doctor/appointments/", DoctorAppointmentListView.as_view(), name="doctor-appointment-list"),
-    # BE-014: path("doctor/appointments/<int:pk>/", DoctorAppointmentDetailView.as_view(), name="doctor-appointment-detail"),
+    # BE-014: Doctor cancel/confirm
+    path("doctor/appointments/<int:pk>/", DoctorAppointmentDetailView.as_view(), name="doctor-appointment-detail"),
     # BE-015: path("doctor/availability/", AvailabilityManagementView.as_view(), name="doctor-availability-list"),
     # BE-015: path("doctor/availability/<int:pk>/", AvailabilityManagementView.as_view(), name="doctor-availability-detail"),
 ]

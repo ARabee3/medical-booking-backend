@@ -16,6 +16,7 @@ from apps.appointments.serializers import (
     AppointmentWriteSerializer,
     AppointmentUpdateSerializer,
     DoctorAppointmentReadSerializer,
+    DoctorAppointmentUpdateSerializer,
 )
 
 
@@ -130,3 +131,51 @@ class DoctorAppointmentListView(generics.ListAPIView):
             .select_related("patient")
             .order_by("-date", "-time")
         )
+
+
+class DoctorAppointmentDetailView(generics.UpdateAPIView):
+    """Modify an existing appointment for the authenticated doctor.
+
+    PATCH: Confirms or cancels the appointment, optionally adding notes.
+    Only the assigned doctor can modify the appointment.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, IsDoctor]
+    serializer_class = DoctorAppointmentUpdateSerializer
+
+    def get_queryset(self):
+        """Return only appointments assigned to the current doctor."""
+        return (
+            Appointment.objects.filter(doctor=self.request.user)
+            .select_related("patient")
+        )
+
+    def update(self, request, *args, **kwargs):
+        """Validate input and apply the appropriate modification."""
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+
+        validated_data = serializer.validated_data
+
+        if validated_data.get("status") == "CANCELLED":
+            from apps.appointments.services import cancel_appointment
+            
+            # Use service to safely release availability
+            appointment = cancel_appointment(appointment=instance)
+            
+            # If there are notes, save them as well
+            if "notes" in validated_data:
+                appointment.notes = validated_data["notes"]
+                appointment.save(update_fields=["notes"])
+        else:
+            # For CONFIRMED + notes, just save the serializer
+            appointment = serializer.save()
+
+        # Return the updated appointment using the read serializer
+        read_serializer = DoctorAppointmentReadSerializer(
+            appointment,
+            context={"request": request},
+        )
+        return Response(read_serializer.data)

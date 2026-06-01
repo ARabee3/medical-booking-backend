@@ -162,3 +162,17 @@ class DoctorAppointmentReadSerializer(serializers.ModelSerializer):
         model = Appointment
         fields = ["id", "patient", "date", "time", "status", "notes", "created_at"]
         read_only_fields = ["id", "patient", "date", "time", "status", "notes", "created_at"]
+
+
+class DoctorAppointmentUpdateSerializer(serializers.ModelSerializer):
+    """Input serializer for doctor modifications — PATCH /api/doctor/appointments/:id/.
+
+    Accepts status="CONFIRMED" or "CANCELLED" and optional notes.
+    """
+
+    status = serializers.ChoiceField(choices=["CONFIRMED", "CANCELLED"])
+    notes = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+    class Meta:
+        model = Appointment
+        fields = ["status", "notes"]
