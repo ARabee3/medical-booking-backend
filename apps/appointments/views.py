@@ -1,14 +1,19 @@
-# Third-party packages
-from rest_framework import mixins, permissions, serializers, viewsets
+from rest_framework import generics, mixins, permissions, status, viewsets
 from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.response import Response
 
-# Django
-from django.utils import timezone
-
-# Local / project imports
+from apps.appointments.models import Appointment
+from apps.appointments.serializers import (
+    AppointmentReadSerializer,
+    AppointmentUpdateSerializer,
+    AppointmentWriteSerializer,
+    AvailabilitySerializer,
+    DoctorAppointmentReadSerializer,
+    DoctorAppointmentUpdateSerializer,
+)
 from apps.doctors.models import Availability
-
-from apps.appointments.serializers import AvailabilitySerializer
+from shared.pagination import StandardResultsSetPagination
+from shared.permissions import IsDoctor, IsPatient
 
 
 class AvailabilityViewSet(
@@ -17,28 +22,10 @@ class AvailabilityViewSet(
     mixins.DestroyModelMixin,
     viewsets.GenericViewSet,
 ):
-    """ViewSet for doctor availability slot management.
-
-    Allowed actions:
-        LIST    GET  /availability/          -- public, supports filtering
-        CREATE  POST /availability/          -- DOCTOR or ADMIN only
-        DESTROY DELETE /availability/<id>/  -- DOCTOR or ADMIN only
-
-    Filtering (via query params, no django-filter dependency needed):
-        ?doctor_id=<int>   -- slots for a specific doctor
-        ?date=YYYY-MM-DD   -- slots on a specific date
-        ?is_booked=true/false -- filter by booking status
-    """
-
-    serializer_class   = AvailabilitySerializer
+    serializer_class = AvailabilitySerializer
     permission_classes = [permissions.IsAuthenticated]
 
-    # ------------------------------------------------------------------
-    # Queryset — supports manual query param filtering
-    # ------------------------------------------------------------------
-
     def get_queryset(self):
-        """Return availability slots, optionally filtered by query params."""
         qs = Availability.objects.select_related(
             "doctor",
             "doctor__user",
@@ -46,7 +33,7 @@ class AvailabilityViewSet(
         ).all()
 
         doctor_id = self.request.query_params.get("doctor_id")
-        date      = self.request.query_params.get("date")
+        date = self.request.query_params.get("date")
         is_booked = self.request.query_params.get("is_booked")
 
         if doctor_id:
@@ -56,58 +43,28 @@ class AvailabilityViewSet(
             qs = qs.filter(date=date)
 
         if is_booked is not None:
-            # Accept 'true'/'false' strings from query params
             qs = qs.filter(is_booked=is_booked.lower() == "true")
 
         return qs.order_by("date", "start_time")
 
-    # ------------------------------------------------------------------
-    # Permission guard — write actions restricted to DOCTOR / ADMIN
-    # ------------------------------------------------------------------
-
     def _assert_can_write(self):
-        """Raise 403 if the requesting user is not a DOCTOR or ADMIN.
-
-        Called explicitly in create and destroy since we need per-action
-        permission logic beyond what a single permission_class can express.
-        """
         if self.request.user.role not in ("DOCTOR", "ADMIN"):
             raise PermissionDenied(
                 "Only doctors and admins can manage availability slots."
             )
 
-    # ------------------------------------------------------------------
-    # Create — auto-assign doctor for DOCTOR role
-    # ------------------------------------------------------------------
-
     def perform_create(self, serializer):
-        """Save the new slot.
-
-        Doctor assignment is already resolved inside AvailabilitySerializer.validate()
-        and stored in validated_data['doctor'], so we just call save() here.
-        """
         self._assert_can_write()
         serializer.save()
 
-    # ------------------------------------------------------------------
-    # Destroy — block deletion of booked slots; enforce ownership for doctors
-    # ------------------------------------------------------------------
-
     def perform_destroy(self, instance):
-        """Delete a slot after validating it is not booked.
-
-        Additional ownership check: a DOCTOR can only delete their own slots.
-        An ADMIN can delete any slot.
-        """
         self._assert_can_write()
 
-        # Block deletion if a patient has already booked the slot
         if instance.is_booked:
             raise ValidationError(
                 {"detail": "Cannot delete a slot that is already booked by a patient."}
             )
 
-        # Doctors can only delete their own slots
         user = self.request.user
         if user.role == "DOCTOR":
             profile = getattr(user, "doctor_profile", None)
@@ -117,3 +74,122 @@ class AvailabilityViewSet(
                 )
 
         instance.delete()
+
+
+class PatientAppointmentListCreateView(generics.ListCreateAPIView):
+    permission_classes = [permissions.IsAuthenticated, IsPatient]
+    pagination_class = StandardResultsSetPagination
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return AppointmentWriteSerializer
+        return AppointmentReadSerializer
+
+    def get_queryset(self):
+        return (
+            Appointment.objects.filter(patient=self.request.user)
+            .select_related(
+                "doctor",
+                "doctor__doctor_profile",
+                "doctor__doctor_profile__specialty",
+            )
+        )
+
+    def create(self, request, *args, **kwargs):
+        write_serializer = self.get_serializer(data=request.data)
+        write_serializer.is_valid(raise_exception=True)
+        appointment = write_serializer.save()
+
+        read_serializer = AppointmentReadSerializer(
+            appointment,
+            context={"request": request},
+        )
+        return Response(read_serializer.data, status=status.HTTP_201_CREATED)
+
+
+class PatientAppointmentDetailView(generics.UpdateAPIView):
+    permission_classes = [permissions.IsAuthenticated, IsPatient]
+    serializer_class = AppointmentUpdateSerializer
+
+    def get_queryset(self):
+        return (
+            Appointment.objects.filter(patient=self.request.user)
+            .select_related(
+                "doctor",
+                "doctor__doctor_profile",
+                "doctor__doctor_profile__specialty",
+            )
+        )
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+
+        from apps.appointments.services import cancel_appointment, reschedule_appointment
+
+        validated_data = serializer.validated_data
+
+        if validated_data.get("status") == "CANCELLED":
+            appointment = cancel_appointment(appointment=instance)
+        else:
+            appointment = reschedule_appointment(
+                appointment=instance,
+                new_date=validated_data["date"],
+                new_time=validated_data["time"],
+            )
+
+        read_serializer = AppointmentReadSerializer(
+            appointment,
+            context={"request": request},
+        )
+        return Response(read_serializer.data)
+
+
+class DoctorAppointmentListView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated, IsDoctor]
+    serializer_class = DoctorAppointmentReadSerializer
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        return (
+            Appointment.objects.filter(doctor=self.request.user)
+            .select_related("patient")
+            .order_by("-date", "-time")
+        )
+
+
+class DoctorAppointmentDetailView(generics.UpdateAPIView):
+    permission_classes = [permissions.IsAuthenticated, IsDoctor]
+    serializer_class = DoctorAppointmentUpdateSerializer
+
+    def get_queryset(self):
+        return Appointment.objects.filter(doctor=self.request.user).select_related(
+            "patient"
+        )
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+
+        validated_data = serializer.validated_data
+
+        if validated_data.get("status") == "CANCELLED":
+            from apps.appointments.services import cancel_appointment
+
+            appointment = cancel_appointment(appointment=instance)
+
+            if "notes" in validated_data:
+                appointment.notes = validated_data["notes"]
+                appointment.save(update_fields=["notes"])
+        else:
+            appointment = serializer.save()
+
+        read_serializer = DoctorAppointmentReadSerializer(
+            appointment,
+            context={"request": request},
+        )
+        return Response(read_serializer.data)
