@@ -6,7 +6,8 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from django.utils import timezone
 
 # Local / project imports
-from apps.appointments.models import Availability
+from apps.doctors.models import Availability
+
 from apps.appointments.serializers import AvailabilitySerializer
 
 

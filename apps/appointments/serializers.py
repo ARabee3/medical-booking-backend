@@ -8,7 +8,7 @@ from rest_framework import serializers
 from django.utils import timezone
 
 # Local / project imports
-from apps.appointments.models import Availability
+from apps.doctors.models import Availability
 from apps.doctors.models import DoctorProfile
 
 
