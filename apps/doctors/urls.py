@@ -9,11 +9,14 @@ Endpoints:
 
 from django.urls import path
 
-# TODO: Import views once implemented
-# from .views import DoctorListView, DoctorDetailView, AvailabilityListView
+from .views import AvailabilityListView, DoctorDetailView, DoctorListView
 
 urlpatterns = [
-    # path("doctors/", DoctorListView.as_view(), name="doctor-list"),
-    # path("doctors/<int:pk>/", DoctorDetailView.as_view(), name="doctor-detail"),
-    # path("doctors/<int:pk>/availability/", AvailabilityListView.as_view(), name="doctor-availability"),
+    path("doctors/", DoctorListView.as_view(), name="doctor-list"),
+    path("doctors/<int:pk>/", DoctorDetailView.as_view(), name="doctor-detail"),
+    path(
+        "doctors/<int:pk>/availability/",
+        AvailabilityListView.as_view(),
+        name="doctor-availability",
+    ),
 ]
