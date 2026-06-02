@@ -11,11 +11,13 @@ from django.db.models import Count, Q
 # Local / project imports
 from shared.permissions import IsAdmin
 from apps.appointments.models import Appointment
+from apps.doctors.models import Specialty
 from apps.admin_api.filters import AppointmentFilter, UserFilter
 from apps.admin_api.serializers import (
     AdminAppointmentSerializer,
     AdminStatsSerializer,
     AdminUserSerializer,
+    SpecialtySerializer,
 )
 
 User = get_user_model()
@@ -26,12 +28,7 @@ User = get_user_model()
 # ---------------------------------------------------------------------------
 
 class AdminUserListView(generics.ListAPIView):
-    """List all users in the system with optional filtering and search.
-
-    GET /api/admin/users/
-    Accessible only by users with the ADMIN role.
-    Supports filter params: role, is_active, is_approved, search.
-    """
+    """List all users. GET /api/admin/users/"""
 
     serializer_class   = AdminUserSerializer
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
@@ -43,16 +40,11 @@ class AdminUserListView(generics.ListAPIView):
 
 
 class AdminUserUpdateView(generics.UpdateAPIView):
-    """Update a user's is_active or is_approved status.
-
-    PATCH /api/admin/users/<id>/
-    Accessible only by users with the ADMIN role.
-    Only is_active and is_approved are writable (enforced by serializer).
-    """
+    """Update user status. PATCH /api/admin/users/<id>/"""
 
     serializer_class   = AdminUserSerializer
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
-    http_method_names  = ["patch"]  # Disable PUT — PATCH only per API contract
+    http_method_names  = ["patch"]
 
     def get_queryset(self):
         return User.objects.all()
@@ -63,26 +55,16 @@ class AdminUserUpdateView(generics.UpdateAPIView):
 # ---------------------------------------------------------------------------
 
 class AdminAppointmentListView(generics.ListAPIView):
-    """List all appointments across the system with filtering and ordering.
-
-    GET /api/admin/appointments/
-    Accessible only by users with the ADMIN role.
-
-    Filter params : status, date_from, date_to
-    Ordering params: date, status (prefix with '-' for descending)
-        e.g. ?ordering=-date&status=PENDING&date_from=2026-01-01
-    """
+    """List all appointments. GET /api/admin/appointments/"""
 
     serializer_class   = AdminAppointmentSerializer
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
     filter_backends    = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_class    = AppointmentFilter
     ordering_fields    = ["date", "status"]
-    ordering           = ["-date"]  # Default: newest first
+    ordering           = ["-date"]
 
     def get_queryset(self):
-        # select_related pulls doctor, patient, and doctor's profile + specialty
-        # in 1 query instead of N+1 on serializer access
         return (
             Appointment.objects
             .select_related(
@@ -100,23 +82,11 @@ class AdminAppointmentListView(generics.ListAPIView):
 # ---------------------------------------------------------------------------
 
 class AdminStatsView(APIView):
-    """Return a flat snapshot of system-wide counts for the admin dashboard.
-
-    GET /api/admin/stats/
-    Accessible only by users with the ADMIN role.
-
-    Response:
-        total_users        -- all registered users
-        total_doctors      -- users with role=DOCTOR
-        total_appointments -- all appointment records
-        pending_approvals  -- doctors awaiting admin approval
-                             (role=DOCTOR, is_approved=False)
-    """
+    """Return system-wide counts. GET /api/admin/stats/"""
 
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
 
     def get(self, request):
-        # Single aggregated query instead of 4 separate .count() calls
         user_counts = User.objects.aggregate(
             total_users=Count("id"),
             total_doctors=Count("id", filter=Q(role="DOCTOR")),
@@ -124,11 +94,52 @@ class AdminStatsView(APIView):
                 "id", filter=Q(role="DOCTOR", is_approved=False)
             ),
         )
-
         stats = {
             **user_counts,
             "total_appointments": Appointment.objects.count(),
         }
-
         serializer = AdminStatsSerializer(stats)
         return Response(serializer.data)
+
+
+# ---------------------------------------------------------------------------
+# Specialty CRUD views
+# ---------------------------------------------------------------------------
+
+class AdminSpecialtyListCreateView(generics.ListCreateAPIView):
+    """List all specialties or create a new one.
+
+    GET  /api/admin/specialties/  -- returns all specialties with doctor count
+    POST /api/admin/specialties/  -- creates a new specialty
+    """
+
+    serializer_class   = SpecialtySerializer
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def get_queryset(self):
+        # Annotate each specialty with how many doctors use it
+        return (
+            Specialty.objects
+            .annotate(doctors_count=Count("doctorprofile"))
+            .order_by("name")
+        )
+
+
+class AdminSpecialtyDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """Retrieve, update, or delete a single specialty.
+
+    GET    /api/admin/specialties/<id>/
+    PATCH  /api/admin/specialties/<id>/
+    DELETE /api/admin/specialties/<id>/
+    """
+
+    serializer_class   = SpecialtySerializer
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    http_method_names  = ["get", "patch", "delete"]  # Disable PUT
+
+    def get_queryset(self):
+        return (
+            Specialty.objects
+            .annotate(doctors_count=Count("doctorprofile"))
+            .all()
+        )

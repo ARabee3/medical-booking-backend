@@ -6,6 +6,7 @@ from django.contrib.auth import get_user_model
 
 # Local / project imports
 from apps.appointments.models import Appointment
+from apps.doctors.models import DoctorProfile, Specialty
 
 User = get_user_model()
 
@@ -44,16 +45,10 @@ class AdminUserSerializer(serializers.ModelSerializer):
 
 
 # ---------------------------------------------------------------------------
-# BE-017 — Appointment overview serializers (nested, no cross-app imports)
+# BE-017 — Appointment overview serializers
 # ---------------------------------------------------------------------------
 
 class _AppointmentDoctorSerializer(serializers.ModelSerializer):
-    """Lightweight doctor representation nested inside AdminAppointmentSerializer.
-
-    Declared here (not imported from apps.doctors) to avoid circular imports.
-    Pulls specialty and image_url from the related DoctorProfile via properties.
-    """
-
     name      = serializers.SerializerMethodField()
     specialty = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
@@ -66,7 +61,6 @@ class _AppointmentDoctorSerializer(serializers.ModelSerializer):
         return f"{obj.first_name} {obj.last_name}".strip()
 
     def get_specialty(self, obj) -> str | None:
-        """Traverse user → doctor_profile → specialty safely."""
         profile = getattr(obj, "doctor_profile", None)
         if profile and profile.specialty:
             return profile.specialty.name
@@ -78,8 +72,6 @@ class _AppointmentDoctorSerializer(serializers.ModelSerializer):
 
 
 class _AppointmentPatientSerializer(serializers.ModelSerializer):
-    """Lightweight patient representation nested inside AdminAppointmentSerializer."""
-
     name = serializers.SerializerMethodField()
 
     class Meta:
@@ -91,12 +83,6 @@ class _AppointmentPatientSerializer(serializers.ModelSerializer):
 
 
 class AdminAppointmentSerializer(serializers.ModelSerializer):
-    """Full appointment serializer for the admin overview endpoint.
-
-    Returns nested doctor and patient objects matching the API contract shape.
-    All fields are read-only — admins observe, not modify, via this endpoint.
-    """
-
     doctor  = _AppointmentDoctorSerializer(read_only=True)
     patient = _AppointmentPatientSerializer(read_only=True)
 
@@ -121,12 +107,32 @@ class AdminAppointmentSerializer(serializers.ModelSerializer):
 # ---------------------------------------------------------------------------
 
 class AdminStatsSerializer(serializers.Serializer):
-    """Flat serializer for the admin dashboard stats endpoint.
-
-    Validates the exact shape documented in the API contract.
-    """
-
     total_users         = serializers.IntegerField()
     total_doctors       = serializers.IntegerField()
     total_appointments  = serializers.IntegerField()
     pending_approvals   = serializers.IntegerField()
+
+
+# ---------------------------------------------------------------------------
+# Specialty CRUD serializers
+# ---------------------------------------------------------------------------
+
+class SpecialtySerializer(serializers.ModelSerializer):
+    """Full serializer for Specialty — used for list, create, update, delete."""
+
+    # Annotated at query time in the view for performance
+    doctors_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model  = Specialty
+        fields = ["id", "name", "description", "icon", "doctors_count"]
+        read_only_fields = ["id", "doctors_count"]
+
+    def validate_name(self, value):
+        """Ensure specialty name is unique (case-insensitive), excluding self on update."""
+        qs = Specialty.objects.filter(name__iexact=value)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError("A specialty with this name already exists.")
+        return value
