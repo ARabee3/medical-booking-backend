@@ -1,46 +1,142 @@
-"""
-Appointments app serializers.
+# Standard library
+from datetime import datetime
 
-- AppointmentDoctorSerializer : Nested doctor info inside appointment responses.
-- AppointmentReadSerializer   : Full appointment output shape (GET list/detail).
-- AppointmentWriteSerializer  : Patient booking input validation (POST).
-"""
-
+# Django
 from django.contrib.auth import get_user_model
+from django.utils import timezone
+
+# Third-party packages
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
 
+# Local / project imports
 from apps.appointments.models import Appointment
 from apps.appointments.services import book_appointment
+from apps.doctors.models import Availability, DoctorProfile
 
 User = get_user_model()
 
 
+class AvailabilitySerializer(serializers.ModelSerializer):
+    """Serializer for doctor availability slots."""
+
+    doctor = serializers.PrimaryKeyRelatedField(
+        queryset=DoctorProfile.objects.all(),
+        required=False,
+    )
+
+    class Meta:
+        model = Availability
+        fields = [
+            "id",
+            "doctor",
+            "date",
+            "start_time",
+            "end_time",
+            "is_booked",
+        ]
+        read_only_fields = ["id", "is_booked"]
+
+    def validate_date(self, value):
+        if value < timezone.localdate():
+            raise serializers.ValidationError(
+                "Availability date must be today or in the future."
+            )
+        return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+
+        request = self.context.get("request")
+        date = attrs["date"]
+        start_time = attrs["start_time"]
+        end_time = attrs["end_time"]
+
+        if end_time <= start_time:
+            raise serializers.ValidationError(
+                {"end_time": "End time must be after start time."}
+            )
+
+        slot_naive = datetime.combine(date, start_time)
+        now = timezone.now()
+
+        if timezone.is_aware(now):
+            slot_dt = timezone.make_aware(slot_naive)
+        else:
+            slot_dt = slot_naive
+
+        if slot_dt <= now:
+            raise serializers.ValidationError(
+                {"start_time": "The slot date and start time must be in the future."}
+            )
+
+        doctor = self._resolve_doctor(attrs, request)
+        attrs["doctor"] = doctor
+
+        overlapping_qs = Availability.objects.filter(
+            doctor=doctor,
+            date=date,
+            start_time__lt=end_time,
+            end_time__gt=start_time,
+        )
+
+        if self.instance:
+            overlapping_qs = overlapping_qs.exclude(pk=self.instance.pk)
+
+        if overlapping_qs.exists():
+            raise serializers.ValidationError(
+                {
+                    "start_time": (
+                        "This slot overlaps with an existing availability slot "
+                        "for the same doctor on the same date."
+                    )
+                }
+            )
+
+        return attrs
+
+    def _resolve_doctor(self, attrs, request):
+        user = getattr(request, "user", None)
+
+        if user and user.role == "DOCTOR":
+            profile = getattr(user, "doctor_profile", None)
+            if profile is None:
+                raise serializers.ValidationError(
+                    "Your account does not have an associated doctor profile."
+                )
+            return profile
+
+        if user and user.role == "ADMIN":
+            doctor = attrs.get("doctor")
+            if doctor is None:
+                raise serializers.ValidationError(
+                    {
+                        "doctor": "Admin must supply a doctor ID when creating an availability slot."
+                    }
+                )
+            return doctor
+
+        raise serializers.ValidationError(
+            "Only doctors and admins can create availability slots."
+        )
+
+
 class AppointmentDoctorSerializer(serializers.Serializer):
-    """Read-only nested doctor object embedded in appointment responses.
-
-    The `id` field returns DoctorProfile.id for consistency with the
-    GET /api/doctors/ endpoint used by the frontend.
-    """
-
     id = serializers.SerializerMethodField()
     name = serializers.SerializerMethodField()
     specialty = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
 
     def get_id(self, obj):
-        """Return DoctorProfile.id (not User.id) for frontend navigation."""
         try:
             return obj.doctor_profile.id
         except AttributeError:
             return None
 
     def get_name(self, obj):
-        """Return formatted display name."""
         return f"Dr. {obj.first_name} {obj.last_name}"
 
     def get_specialty(self, obj):
-        """Return specialty name or None."""
         try:
             specialty = obj.doctor_profile.specialty
             return specialty.name if specialty else None
@@ -48,7 +144,6 @@ class AppointmentDoctorSerializer(serializers.Serializer):
             return None
 
     def get_image_url(self, obj):
-        """Return image URL or None if unset."""
         try:
             return obj.doctor_profile.image_url or None
         except AttributeError:
@@ -56,11 +151,6 @@ class AppointmentDoctorSerializer(serializers.Serializer):
 
 
 class AppointmentReadSerializer(serializers.ModelSerializer):
-    """Output serializer for appointment list and post-booking responses.
-
-    Produces the exact shape defined in docs/API_CONTRACT.md §Appointments.
-    """
-
     doctor = AppointmentDoctorSerializer(read_only=True)
     time = serializers.TimeField(format="%H:%M", read_only=True)
     date = serializers.DateField(format="%Y-%m-%d", read_only=True)
@@ -72,18 +162,11 @@ class AppointmentReadSerializer(serializers.ModelSerializer):
 
 
 class AppointmentWriteSerializer(serializers.Serializer):
-    """Input serializer for patient booking — POST /api/appointments/.
-
-    Accepts doctor_id (User.id), date (YYYY-MM-DD), and time (HH:MM).
-    All booking business logic is delegated to services.book_appointment().
-    """
-
     doctor_id = serializers.IntegerField()
     date = serializers.DateField()
     time = serializers.TimeField(input_formats=["%H:%M", "%H:%M:%S"])
 
     def validate(self, attrs):
-        """Resolve doctor_id to a User instance; fail fast with clear error."""
         try:
             doctor = User.objects.get(
                 id=attrs["doctor_id"],
@@ -94,12 +177,10 @@ class AppointmentWriteSerializer(serializers.Serializer):
         except User.DoesNotExist:
             raise ValidationError({"doctor_id": ["Doctor not found or not available."]})
 
-        # Attach resolved object so create() avoids a second DB hit
         attrs["doctor"] = doctor
         return attrs
 
     def create(self, validated_data):
-        """Delegate to the booking service — no logic lives in the serializer."""
         return book_appointment(
             patient=self.context["request"].user,
             doctor=validated_data["doctor"],
@@ -109,17 +190,11 @@ class AppointmentWriteSerializer(serializers.Serializer):
 
 
 class AppointmentUpdateSerializer(serializers.Serializer):
-    """Input serializer for patient modifications — PATCH /api/appointments/:id/.
-
-    Accepts status="CANCELLED" to cancel, or date/time to reschedule.
-    """
-
     status = serializers.ChoiceField(choices=["CANCELLED"], required=False)
     date = serializers.DateField(required=False)
     time = serializers.TimeField(input_formats=["%H:%M", "%H:%M:%S"], required=False)
 
     def validate(self, attrs):
-        """Ensure either cancellation or rescheduling data is provided."""
         has_status = "status" in attrs
         has_reschedule = "date" in attrs and "time" in attrs
 
@@ -127,9 +202,9 @@ class AppointmentUpdateSerializer(serializers.Serializer):
             raise ValidationError(
                 "Provide status='CANCELLED' to cancel, or both date and time to reschedule."
             )
-            
+
         if has_status and has_reschedule:
-             raise ValidationError(
+            raise ValidationError(
                 "Cannot cancel and reschedule in the same request."
             )
 
@@ -137,23 +212,15 @@ class AppointmentUpdateSerializer(serializers.Serializer):
 
 
 class AppointmentPatientSerializer(serializers.Serializer):
-    """Read-only nested patient object embedded in doctor appointment responses."""
-
     id = serializers.IntegerField(source="pk")
     name = serializers.SerializerMethodField()
     email = serializers.EmailField()
 
     def get_name(self, obj):
-        """Return formatted display name."""
         return f"{obj.first_name} {obj.last_name}"
 
 
 class DoctorAppointmentReadSerializer(serializers.ModelSerializer):
-    """Output serializer for doctor appointment list.
-
-    Produces the exact shape defined in docs/API_CONTRACT.md §Doctor Endpoints.
-    """
-
     patient = AppointmentPatientSerializer(read_only=True)
     time = serializers.TimeField(format="%H:%M", read_only=True)
     date = serializers.DateField(format="%Y-%m-%d", read_only=True)
@@ -165,11 +232,6 @@ class DoctorAppointmentReadSerializer(serializers.ModelSerializer):
 
 
 class DoctorAppointmentUpdateSerializer(serializers.ModelSerializer):
-    """Input serializer for doctor modifications — PATCH /api/doctor/appointments/:id/.
-
-    Accepts status="CONFIRMED" or "CANCELLED" and optional notes.
-    """
-
     status = serializers.ChoiceField(choices=["CONFIRMED", "CANCELLED"])
     notes = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 

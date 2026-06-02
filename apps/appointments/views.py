@@ -1,46 +1,91 @@
-"""
-Appointments app views.
-
-PatientAppointmentListCreateView: GET + POST /api/appointments/
-"""
-
-from rest_framework import generics, permissions, status
+from rest_framework import generics, mixins, permissions, status, viewsets
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
-
-from shared.pagination import StandardResultsSetPagination
-from shared.permissions import IsPatient, IsDoctor
 
 from apps.appointments.models import Appointment
 from apps.appointments.serializers import (
     AppointmentReadSerializer,
-    AppointmentWriteSerializer,
     AppointmentUpdateSerializer,
+    AppointmentWriteSerializer,
+    AvailabilitySerializer,
     DoctorAppointmentReadSerializer,
     DoctorAppointmentUpdateSerializer,
 )
+from apps.doctors.models import Availability
+from shared.pagination import StandardResultsSetPagination
+from shared.permissions import IsDoctor, IsPatient
+
+
+class AvailabilityViewSet(
+    mixins.ListModelMixin,
+    mixins.CreateModelMixin,
+    mixins.DestroyModelMixin,
+    viewsets.GenericViewSet,
+):
+    serializer_class = AvailabilitySerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        qs = Availability.objects.select_related(
+            "doctor",
+            "doctor__user",
+            "doctor__specialty",
+        ).all()
+
+        doctor_id = self.request.query_params.get("doctor_id")
+        date = self.request.query_params.get("date")
+        is_booked = self.request.query_params.get("is_booked")
+
+        if doctor_id:
+            qs = qs.filter(doctor_id=doctor_id)
+
+        if date:
+            qs = qs.filter(date=date)
+
+        if is_booked is not None:
+            qs = qs.filter(is_booked=is_booked.lower() == "true")
+
+        return qs.order_by("date", "start_time")
+
+    def _assert_can_write(self):
+        if self.request.user.role not in ("DOCTOR", "ADMIN"):
+            raise PermissionDenied(
+                "Only doctors and admins can manage availability slots."
+            )
+
+    def perform_create(self, serializer):
+        self._assert_can_write()
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        self._assert_can_write()
+
+        if instance.is_booked:
+            raise ValidationError(
+                {"detail": "Cannot delete a slot that is already booked by a patient."}
+            )
+
+        user = self.request.user
+        if user.role == "DOCTOR":
+            profile = getattr(user, "doctor_profile", None)
+            if profile is None or instance.doctor_id != profile.pk:
+                raise PermissionDenied(
+                    "You can only delete your own availability slots."
+                )
+
+        instance.delete()
 
 
 class PatientAppointmentListCreateView(generics.ListCreateAPIView):
-    """List and book appointments for the authenticated patient.
-
-    GET:  Returns all appointments belonging to request.user (patient).
-    POST: Validates and books a new appointment via the booking service.
-    """
-
     permission_classes = [permissions.IsAuthenticated, IsPatient]
     pagination_class = StandardResultsSetPagination
 
     def get_serializer_class(self):
-        """Use the write serializer for POST; read serializer for GET."""
         if self.request.method == "POST":
             return AppointmentWriteSerializer
         return AppointmentReadSerializer
 
     def get_queryset(self):
-        """Return only appointments owned by the current patient.
-
-        select_related prevents N+1 queries when rendering nested doctor info.
-        """
         return (
             Appointment.objects.filter(patient=self.request.user)
             .select_related(
@@ -51,12 +96,10 @@ class PatientAppointmentListCreateView(generics.ListCreateAPIView):
         )
 
     def create(self, request, *args, **kwargs):
-        """Validate input, book the appointment, return the read-shape response."""
         write_serializer = self.get_serializer(data=request.data)
         write_serializer.is_valid(raise_exception=True)
         appointment = write_serializer.save()
 
-        # Re-serialize with read serializer to match the API contract output shape
         read_serializer = AppointmentReadSerializer(
             appointment,
             context={"request": request},
@@ -65,17 +108,10 @@ class PatientAppointmentListCreateView(generics.ListCreateAPIView):
 
 
 class PatientAppointmentDetailView(generics.UpdateAPIView):
-    """Modify an existing appointment for the authenticated patient.
-
-    PATCH: Cancels or reschedules the appointment based on input.
-    Only the owning patient can modify the appointment.
-    """
-
     permission_classes = [permissions.IsAuthenticated, IsPatient]
     serializer_class = AppointmentUpdateSerializer
 
     def get_queryset(self):
-        """Return only appointments owned by the current patient."""
         return (
             Appointment.objects.filter(patient=self.request.user)
             .select_related(
@@ -86,7 +122,6 @@ class PatientAppointmentDetailView(generics.UpdateAPIView):
         )
 
     def update(self, request, *args, **kwargs):
-        """Validate input and apply the appropriate modification via services."""
         partial = kwargs.pop("partial", False)
         instance = self.get_object()
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
@@ -105,7 +140,6 @@ class PatientAppointmentDetailView(generics.UpdateAPIView):
                 new_time=validated_data["time"],
             )
 
-        # Return the updated appointment using the read serializer
         read_serializer = AppointmentReadSerializer(
             appointment,
             context={"request": request},
@@ -114,18 +148,11 @@ class PatientAppointmentDetailView(generics.UpdateAPIView):
 
 
 class DoctorAppointmentListView(generics.ListAPIView):
-    """List appointments for the authenticated doctor.
-
-    GET: Returns all appointments where doctor=request.user.
-    Includes nested patient information.
-    """
-
     permission_classes = [permissions.IsAuthenticated, IsDoctor]
     serializer_class = DoctorAppointmentReadSerializer
     pagination_class = StandardResultsSetPagination
 
     def get_queryset(self):
-        """Return only appointments owned by the current doctor."""
         return (
             Appointment.objects.filter(doctor=self.request.user)
             .select_related("patient")
@@ -134,24 +161,15 @@ class DoctorAppointmentListView(generics.ListAPIView):
 
 
 class DoctorAppointmentDetailView(generics.UpdateAPIView):
-    """Modify an existing appointment for the authenticated doctor.
-
-    PATCH: Confirms or cancels the appointment, optionally adding notes.
-    Only the assigned doctor can modify the appointment.
-    """
-
     permission_classes = [permissions.IsAuthenticated, IsDoctor]
     serializer_class = DoctorAppointmentUpdateSerializer
 
     def get_queryset(self):
-        """Return only appointments assigned to the current doctor."""
-        return (
-            Appointment.objects.filter(doctor=self.request.user)
-            .select_related("patient")
+        return Appointment.objects.filter(doctor=self.request.user).select_related(
+            "patient"
         )
 
     def update(self, request, *args, **kwargs):
-        """Validate input and apply the appropriate modification."""
         partial = kwargs.pop("partial", False)
         instance = self.get_object()
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
@@ -161,19 +179,15 @@ class DoctorAppointmentDetailView(generics.UpdateAPIView):
 
         if validated_data.get("status") == "CANCELLED":
             from apps.appointments.services import cancel_appointment
-            
-            # Use service to safely release availability
+
             appointment = cancel_appointment(appointment=instance)
-            
-            # If there are notes, save them as well
+
             if "notes" in validated_data:
                 appointment.notes = validated_data["notes"]
                 appointment.save(update_fields=["notes"])
         else:
-            # For CONFIRMED + notes, just save the serializer
             appointment = serializer.save()
 
-        # Return the updated appointment using the read serializer
         read_serializer = DoctorAppointmentReadSerializer(
             appointment,
             context={"request": request},
