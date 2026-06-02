@@ -1,6 +1,11 @@
 """
 Local development settings.
+
+By default, inherits PostgreSQL config from base.py (which reads from .env).
+To use SQLite for quick testing without PostgreSQL, set USE_SQLITE=true in .env.
 """
+
+import os
 
 from .base import *  # noqa: F401,F403
 
@@ -9,13 +14,16 @@ DEBUG = True
 # Allow all hosts in development
 ALLOWED_HOSTS = ["*"]
 
-# Use SQLite for local development (no PostgreSQL required)
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",  # noqa: F405
+# Opt-in SQLite for quick testing (default: PostgreSQL from base.py)
+USE_SQLITE = os.getenv("USE_SQLITE", "false").lower() in ("true", "1", "yes")
+
+if USE_SQLITE:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",  # noqa: F405
+        }
     }
-}
 
 # Console email backend for development
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
