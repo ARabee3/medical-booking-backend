@@ -11,7 +11,7 @@ Endpoints:
 from datetime import date as dt_date
 
 # Third-party packages
-from rest_framework import generics, status
+from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -34,6 +34,7 @@ class DoctorListView(generics.ListAPIView):
 
     serializer_class = DoctorListSerializer
     pagination_class = StandardResultsSetPagination
+    permission_classes = [permissions.AllowAny]
 
     def get_queryset(self):
         qs = (
@@ -63,6 +64,7 @@ class DoctorDetailView(generics.RetrieveAPIView):
 
     serializer_class = DoctorDetailSerializer
     lookup_field = "pk"
+    permission_classes = [permissions.AllowAny]
 
     def get_queryset(self):
         return (
@@ -82,12 +84,16 @@ class DoctorDetailView(generics.RetrieveAPIView):
 class AvailabilityListView(APIView):
     """List available time slots for a doctor on a given date.
 
+    This endpoint is public — patients browse slots before booking.
+
     Query parameters:
         date (str, required) -- YYYY-MM-DD format
 
     Response shape:
         { "doctor_id": 1, "date": "2026-01-20", "slots": ["09:00", ...] }
     """
+
+    permission_classes = [permissions.AllowAny]
 
     def get(self, request, pk: int):
         # Validate the doctor exists and is active/approved
