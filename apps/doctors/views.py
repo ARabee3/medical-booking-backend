@@ -82,6 +82,32 @@ class DoctorDetailView(generics.RetrieveAPIView):
         return response
 
 
+class CurrentDoctorView(APIView):
+    """Return the authenticated doctor's own profile.
+
+    Used by the frontend doctor dashboard to resolve the logged-in doctor's ID.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if user.role != "DOCTOR":
+            return Response(
+                {"detail": "Only doctors can access this endpoint."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        try:
+            profile = user.doctor_profile
+        except DoctorProfile.DoesNotExist:
+            return Response(
+                {"detail": "You do not have a doctor profile."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        serializer = DoctorDetailSerializer(profile)
+        return Response(serializer.data)
+
+
 class AvailabilityListView(APIView):
     """List available time slots for a doctor on a given date.
 

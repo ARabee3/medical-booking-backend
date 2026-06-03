@@ -13,6 +13,7 @@ from django.urls import path
 from .views import (
     AvailabilityListView,
     AvailabilitySummaryView,
+    CurrentDoctorView,
     DoctorDetailView,
     DoctorListView,
 )
@@ -20,6 +21,7 @@ from .views import (
 urlpatterns = [
     path("doctors/", DoctorListView.as_view(), name="doctor-list"),
     path("doctors/<int:pk>/", DoctorDetailView.as_view(), name="doctor-detail"),
+    path("doctors/me/", CurrentDoctorView.as_view(), name="current-doctor"),
     path(
         "doctors/<int:pk>/availability/",
         AvailabilityListView.as_view(),

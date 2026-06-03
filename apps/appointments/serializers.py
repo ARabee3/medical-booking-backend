@@ -18,24 +18,33 @@ User = get_user_model()
 
 
 class AvailabilitySerializer(serializers.ModelSerializer):
-    """Serializer for doctor availability slots."""
+    """Serializer for doctor availability slots.
 
+    Read:  exposes doctor_id (DoctorProfile.id) so the frontend can
+           invalidate the correct query cache.
+    Write: doctor is resolved from the authenticated user (or supplied
+           by an admin) in validate().
+    """
+
+    doctor_id = serializers.IntegerField(source="doctor.id", read_only=True)
     doctor = serializers.PrimaryKeyRelatedField(
         queryset=DoctorProfile.objects.all(),
         required=False,
+        write_only=True,
     )
 
     class Meta:
         model = Availability
         fields = [
             "id",
+            "doctor_id",
             "doctor",
             "date",
             "start_time",
             "end_time",
             "is_booked",
         ]
-        read_only_fields = ["id", "is_booked"]
+        read_only_fields = ["id", "is_booked", "doctor_id"]
 
     def validate_date(self, value):
         if value < timezone.localdate():

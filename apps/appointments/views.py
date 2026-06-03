@@ -38,6 +38,11 @@ class AvailabilityViewSet(
 
         if doctor_id:
             qs = qs.filter(doctor_id=doctor_id)
+        elif self.request.user.role == "DOCTOR":
+            # If no explicit doctor_id, doctors only see their own slots
+            profile = getattr(self.request.user, "doctor_profile", None)
+            if profile:
+                qs = qs.filter(doctor=profile)
 
         if date:
             qs = qs.filter(date=date)
