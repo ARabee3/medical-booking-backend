@@ -30,9 +30,11 @@ MIDDLEWARE.insert(1, "whitenoise.middleware.WhiteNoiseMiddleware")  # noqa: F405
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 # CORS: configure from environment
-CORS_ALLOWED_ORIGINS = os.getenv(
-    "CORS_ALLOWED_ORIGINS", ""
-).split(",")
+cors_allowed_origins_env = os.getenv("CORS_ALLOWED_ORIGINS", "")
+CORS_ALLOWED_ORIGINS = [
+    origin.strip() for origin in cors_allowed_origins_env.split(",") if origin.strip()
+]
+
 
 # Database: use DATABASE_URL if provided
 database_url = os.getenv("DATABASE_URL")  # noqa: F405
