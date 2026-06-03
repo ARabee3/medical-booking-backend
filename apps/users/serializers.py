@@ -9,6 +9,7 @@ from rest_framework import serializers, status
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
+from apps.doctors.models import DoctorProfile
 from .models import PatientProfile
 
 User = get_user_model()
@@ -69,6 +70,8 @@ class RegisterSerializer(serializers.ModelSerializer):
 
         if role == "PATIENT":
             PatientProfile.objects.create(user=user)
+        elif role == "DOCTOR":
+            DoctorProfile.objects.create(user=user)
 
         return user
 

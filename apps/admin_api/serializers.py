@@ -22,6 +22,12 @@ class AdminUserSerializer(serializers.ModelSerializer):
     Writable fields: is_active, is_approved only.
     """
 
+    def update(self, instance, validated_data):
+        user = super().update(instance, validated_data)
+        if user.role == "DOCTOR" and not hasattr(user, "doctor_profile"):
+            DoctorProfile.objects.create(user=user)
+        return user
+
     class Meta:
         model = User
         fields = [
