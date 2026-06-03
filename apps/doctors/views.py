@@ -6,6 +6,15 @@ Endpoints:
 - GET /api/doctors/<id>/          → single doctor profile
 - GET /api/doctors/<id>/availability/?date=YYYY-MM-DD → free slots
 - GET /api/doctors/<id>/availability/summary/?from=...&to=... → slot counts by date
+- PATCH /api/doctors/me/update/   → update own profile
+- POST /api/doctors/me/avatar/    → upload profile avatar
+- DELETE /api/doctors/me/avatar/  → remove profile avatar
+- GET /api/doctors/me/images/     → list own images
+- POST /api/doctors/me/images/    → upload clinic/certificate image
+- GET, PATCH, DELETE /api/doctors/me/images/<id>/ → manage single image
+- GET /api/doctors/<id>/images/   → public list of doctor images
+- GET /api/doctors/<id>/reviews/  → public list of doctor reviews
+- GET /api/doctors/me/reviews/     → list own reviews (doctor)
 """
 
 # Standard library
@@ -20,9 +29,17 @@ from rest_framework.views import APIView
 from django.db.models import Q, Count
 
 # Local / project imports
-from apps.doctors.models import DoctorProfile, Availability
+from apps.appointments.serializers import ReviewReadSerializer
+from apps.doctors.models import DoctorProfile, DoctorImage, Availability
 from shared.pagination import StandardResultsSetPagination
-from .serializers import DoctorDetailSerializer, DoctorListSerializer
+from .serializers import (
+    DoctorDetailSerializer,
+    DoctorListSerializer,
+    DoctorImageSerializer,
+    DoctorImageUploadSerializer,
+    DoctorProfileUpdateSerializer,
+)
+from .utils import delete_from_cloudinary
 
 
 class DoctorListView(generics.ListAPIView):
@@ -72,6 +89,7 @@ class DoctorDetailView(generics.RetrieveAPIView):
             DoctorProfile.objects
             .filter(user__is_active=True, user__is_approved=True)
             .select_related("user", "specialty")
+            .prefetch_related("images")
         )
 
     def handle_exception(self, exc):
@@ -98,7 +116,7 @@ class CurrentDoctorView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
         try:
-            profile = user.doctor_profile
+            profile = DoctorProfile.objects.select_related("user", "specialty").prefetch_related("images").get(user=user)
         except DoctorProfile.DoesNotExist:
             return Response(
                 {"detail": "You do not have a doctor profile."},
@@ -117,7 +135,14 @@ class AvailabilityListView(APIView):
         date (str, required) -- YYYY-MM-DD format
 
     Response shape:
-        { "doctor_id": 1, "date": "2026-01-20", "slots": ["09:00", ...] }
+        {
+            "doctor_id": 1,
+            "date": "2026-01-20",
+            "slots": [
+                {"time": "09:00", "price": "150.00"},
+                ...
+            ]
+        }
     """
 
     permission_classes = [permissions.AllowAny]
@@ -171,18 +196,19 @@ class AvailabilityListView(APIView):
                 date=requested_date,
                 is_booked=False,
             )
-            .values_list("start_time", flat=True)
             .order_by("start_time")
         )
 
-        # Format times as "HH:MM" strings
-        slot_times = [s.strftime("%H:%M") for s in slots]
+        slot_data = [
+            {"time": s.start_time.strftime("%H:%M"), "price": str(s.price) if s.price else None}
+            for s in slots
+        ]
 
         return Response(
             {
                 "doctor_id": doctor.id,
                 "date": date_str,
-                "slots": slot_times,
+                "slots": slot_data,
             }
         )
 
@@ -297,3 +323,223 @@ class AvailabilitySummaryView(APIView):
                 "total": total,
             }
         )
+
+
+class CurrentDoctorUpdateView(APIView):
+    """PATCH /api/doctors/me/update/ — update own profile (bio, specialty, phone)."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request):
+        user = request.user
+        if user.role != "DOCTOR":
+            return Response(
+                {"detail": "Only doctors can access this endpoint."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        profile = user.doctor_profile
+        serializer = DoctorProfileUpdateSerializer(profile, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(DoctorDetailSerializer(profile).data)
+
+
+class AvatarUploadView(APIView):
+    """POST /api/doctors/me/avatar/ — upload profile avatar to Cloudinary."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if user.role != "DOCTOR":
+            return Response(
+                {"detail": "Only doctors can upload an avatar."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        profile = user.doctor_profile
+        image = request.FILES.get("image")
+        if not image:
+            return Response(
+                {"image": ["This field is required."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        from apps.doctors.utils import upload_to_cloudinary
+
+        if profile.profile_public_id:
+            delete_from_cloudinary(profile.profile_public_id)
+
+        image_url, public_id = upload_to_cloudinary(image, folder=f"doctors/{profile.id}/avatar")
+
+        profile.image_url = image_url
+        profile.profile_public_id = public_id
+        profile.save(update_fields=["image_url", "profile_public_id"])
+
+        return Response(DoctorDetailSerializer(profile).data, status=status.HTTP_200_OK)
+
+
+class AvatarDeleteView(APIView):
+    """DELETE /api/doctors/me/avatar/ — remove profile avatar, reset to default."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request):
+        user = request.user
+        if user.role != "DOCTOR":
+            return Response(
+                {"detail": "Only doctors can manage their avatar."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        profile = user.doctor_profile
+        if profile.profile_public_id:
+            delete_from_cloudinary(profile.profile_public_id)
+        profile.image_url = ""
+        profile.profile_public_id = ""
+        profile.save(update_fields=["image_url", "profile_public_id"])
+        return Response(DoctorDetailSerializer(profile).data, status=status.HTTP_200_OK)
+
+
+class DoctorImageListView(APIView):
+    """GET /api/doctors/me/images/ — list own images.
+    POST /api/doctors/me/images/ — upload a new clinic/certificate image.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if user.role != "DOCTOR":
+            return Response(
+                {"detail": "Only doctors can access this endpoint."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        profile = user.doctor_profile
+        qs = profile.images.all()
+        kind = request.query_params.get("kind")
+        if kind in ("CLINIC", "CERTIFICATE"):
+            qs = qs.filter(kind=kind)
+        serializer = DoctorImageSerializer(qs, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        user = request.user
+        if user.role != "DOCTOR":
+            return Response(
+                {"detail": "Only doctors can upload images."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        serializer = DoctorImageUploadSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        image = serializer.save()
+        return Response(DoctorImageSerializer(image).data, status=status.HTTP_201_CREATED)
+
+
+class DoctorImageDetailView(APIView):
+    """GET, PATCH, DELETE /api/doctors/me/images/<id>/ — manage a single image."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self, pk):
+        obj = DoctorImage.objects.select_related("doctor", "doctor__user").get(pk=pk)
+        if obj.doctor.user != self.request.user:
+            raise DoctorImage.DoesNotExist
+        return obj
+
+    def get(self, request, pk):
+        try:
+            image = self.get_object(pk)
+        except DoctorImage.DoesNotExist:
+            return Response({"detail": "Image not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(DoctorImageSerializer(image).data)
+
+    def patch(self, request, pk):
+        try:
+            image = self.get_object(pk)
+        except DoctorImage.DoesNotExist:
+            return Response({"detail": "Image not found."}, status=status.HTTP_404_NOT_FOUND)
+        allowed_fields = {"caption", "order"}
+        for field in allowed_fields:
+            if field in request.data:
+                setattr(image, field, request.data[field])
+        image.save(update_fields=["caption", "order"])
+        return Response(DoctorImageSerializer(image).data)
+
+    def delete(self, request, pk):
+        try:
+            image = self.get_object(pk)
+        except DoctorImage.DoesNotExist:
+            return Response({"detail": "Image not found."}, status=status.HTTP_404_NOT_FOUND)
+        delete_from_cloudinary(image.public_id)
+        image.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class PublicDoctorImagesView(APIView):
+    """GET /api/doctors/<id>/images/ — public list of a doctor's images."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, pk):
+        try:
+            doctor = (
+                DoctorProfile.objects
+                .filter(user__is_active=True, user__is_approved=True)
+                .get(pk=pk)
+            )
+        except DoctorProfile.DoesNotExist:
+            return Response(
+                {"detail": "Doctor not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        qs = doctor.images.all()
+        kind = request.query_params.get("kind")
+        if kind in ("CLINIC", "CERTIFICATE"):
+            qs = qs.filter(kind=kind)
+        serializer = DoctorImageSerializer(qs, many=True)
+        return Response(serializer.data)
+
+
+class DoctorReviewsView(APIView):
+    """GET /api/doctors/<id>/reviews/ — public list of a doctor's reviews."""
+
+    permission_classes = [permissions.AllowAny]
+    pagination_class = StandardResultsSetPagination
+
+    def get(self, request, pk):
+        try:
+            doctor = (
+                DoctorProfile.objects
+                .filter(user__is_active=True, user__is_approved=True)
+                .get(pk=pk)
+            )
+        except DoctorProfile.DoesNotExist:
+            return Response(
+                {"detail": "Doctor not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        qs = doctor.reviews.select_related("patient").all()
+        serializer = ReviewReadSerializer(qs, many=True)
+        return Response(serializer.data)
+
+
+class CurrentDoctorReviewsView(APIView):
+    """GET /api/doctors/me/reviews/ — list reviews for the current doctor."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if user.role != "DOCTOR":
+            return Response(
+                {"detail": "Only doctors can access this endpoint."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        try:
+            profile = user.doctor_profile
+        except DoctorProfile.DoesNotExist:
+            return Response(
+                {"detail": "You do not have a doctor profile."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        qs = profile.reviews.select_related("patient").all()
+        serializer = ReviewReadSerializer(qs, many=True)
+        return Response(serializer.data)

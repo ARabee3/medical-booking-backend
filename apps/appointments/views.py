@@ -1,8 +1,9 @@
 from rest_framework import generics, mixins, permissions, status, viewsets
+from rest_framework.views import APIView
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
-from apps.appointments.models import Appointment
+from apps.appointments.models import Appointment, Review
 from apps.appointments.serializers import (
     AppointmentReadSerializer,
     AppointmentUpdateSerializer,
@@ -10,6 +11,9 @@ from apps.appointments.serializers import (
     AvailabilitySerializer,
     DoctorAppointmentReadSerializer,
     DoctorAppointmentUpdateSerializer,
+    ReviewReadSerializer,
+    ReviewWriteSerializer,
+    ReviewUpdateSerializer,
 )
 from apps.doctors.models import Availability
 from shared.pagination import StandardResultsSetPagination
@@ -198,3 +202,72 @@ class DoctorAppointmentDetailView(generics.UpdateAPIView):
             context={"request": request},
         )
         return Response(read_serializer.data)
+
+
+class CreateReviewView(APIView):
+    """POST /api/appointments/<pk>/review/ — create a review for a completed appointment."""
+
+    permission_classes = [permissions.IsAuthenticated, IsPatient]
+
+    def post(self, request, pk):
+        serializer = ReviewWriteSerializer(
+            data=request.data,
+            context={"request": request, "appointment_pk": pk},
+        )
+        serializer.is_valid(raise_exception=True)
+        review = serializer.save()
+        return Response(ReviewReadSerializer(review).data, status=status.HTTP_201_CREATED)
+
+
+class AppointmentReviewView(APIView):
+    """GET /api/appointments/<pk>/review/ — get review for a specific appointment."""
+
+    permission_classes = [permissions.IsAuthenticated, IsPatient]
+
+    def get(self, request, pk):
+        try:
+            appointment = Appointment.objects.get(pk=pk, patient=request.user)
+        except Appointment.DoesNotExist:
+            return Response(
+                {"detail": "Appointment not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        try:
+            review = appointment.review
+        except Review.DoesNotExist:
+            return Response(
+                {"detail": "No review found for this appointment."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(ReviewReadSerializer(review).data)
+
+
+class ReviewDetailView(APIView):
+    """PATCH /api/reviews/<pk>/ — edit own review.
+    DELETE /api/reviews/<pk>/ — delete own review.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, IsPatient]
+
+    def get_object(self, pk):
+        try:
+            review = Review.objects.select_related("patient").get(pk=pk)
+        except Review.DoesNotExist:
+            raise PermissionDenied("Review not found.")
+        if review.patient != self.request.user:
+            raise PermissionDenied("You can only manage your own reviews.")
+        return review
+
+    def patch(self, request, pk):
+        review = self.get_object(pk)
+        serializer = ReviewUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        review.rating = serializer.validated_data["rating"]
+        review.comment = serializer.validated_data.get("comment", "")
+        review.save(update_fields=["rating", "comment", "updated_at"])
+        return Response(ReviewReadSerializer(review).data)
+
+    def delete(self, request, pk):
+        review = self.get_object(pk)
+        review.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)

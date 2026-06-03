@@ -2,11 +2,14 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from apps.appointments.views import (
+    AppointmentReviewView,
     AvailabilityViewSet,
+    CreateReviewView,
     DoctorAppointmentDetailView,
     DoctorAppointmentListView,
     PatientAppointmentDetailView,
     PatientAppointmentListCreateView,
+    ReviewDetailView,
 )
 
 router = DefaultRouter()
@@ -19,6 +22,9 @@ router.register(
 urlpatterns = [
     path("appointments/", PatientAppointmentListCreateView.as_view(), name="appointment-list"),
     path("appointments/<int:pk>/", PatientAppointmentDetailView.as_view(), name="appointment-detail"),
+    path("appointments/<int:pk>/review/", AppointmentReviewView.as_view(), name="appointment-review"),
+    path("appointments/<int:pk>/review/create/", CreateReviewView.as_view(), name="create-review"),
+    path("reviews/<int:pk>/", ReviewDetailView.as_view(), name="review-detail"),
     path("doctor/appointments/", DoctorAppointmentListView.as_view(), name="doctor-appointment-list"),
     path("doctor/appointments/<int:pk>/", DoctorAppointmentDetailView.as_view(), name="doctor-appointment-detail"),
 ]
