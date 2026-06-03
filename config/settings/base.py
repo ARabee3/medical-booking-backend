@@ -36,6 +36,7 @@ THIRD_PARTY_APPS = [
     "rest_framework",
     "rest_framework_simplejwt",
     "corsheaders",
+    "cloudinary",
 ]
 
 LOCAL_APPS = [
@@ -148,6 +149,8 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_PARSER_CLASSES": [
         "rest_framework.parsers.JSONParser",
+        "rest_framework.parsers.MultiPartParser",
+        "rest_framework.parsers.FormParser",
     ],
     "EXCEPTION_HANDLER": "shared.exceptions.custom_exception_handler",
 }
@@ -192,6 +195,12 @@ SIMPLE_JWT = {
 
 # CORS settings (for frontend integration)
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",  # Vite default
+    "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
+
+CLOUDINARY = {
+    "cloud_name": os.getenv("CLOUDINARY_CLOUD_NAME", ""),
+    "api_key": os.getenv("CLOUDINARY_API_KEY", ""),
+    "api_secret": os.getenv("CLOUDINARY_API_SECRET", ""),
+}

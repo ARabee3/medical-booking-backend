@@ -10,7 +10,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
 
 # Local / project imports
-from apps.appointments.models import Appointment
+from apps.appointments.models import Appointment, Review
 from apps.appointments.services import book_appointment
 from apps.doctors.models import Availability, DoctorProfile
 
@@ -18,24 +18,34 @@ User = get_user_model()
 
 
 class AvailabilitySerializer(serializers.ModelSerializer):
-    """Serializer for doctor availability slots."""
+    """Serializer for doctor availability slots.
 
+    Read:  exposes doctor_id (DoctorProfile.id) so the frontend can
+           invalidate the correct query cache.
+    Write: doctor is resolved from the authenticated user (or supplied
+           by an admin) in validate().
+    """
+
+    doctor_id = serializers.IntegerField(source="doctor.id", read_only=True)
     doctor = serializers.PrimaryKeyRelatedField(
         queryset=DoctorProfile.objects.all(),
         required=False,
+        write_only=True,
     )
 
     class Meta:
         model = Availability
         fields = [
             "id",
+            "doctor_id",
             "doctor",
             "date",
             "start_time",
             "end_time",
+            "price",
             "is_booked",
         ]
-        read_only_fields = ["id", "is_booked"]
+        read_only_fields = ["id", "is_booked", "doctor_id"]
 
     def validate_date(self, value):
         if value < timezone.localdate():
@@ -167,17 +177,20 @@ class AppointmentWriteSerializer(serializers.Serializer):
     time = serializers.TimeField(input_formats=["%H:%M", "%H:%M:%S"])
 
     def validate(self, attrs):
+        from apps.doctors.models import DoctorProfile
         try:
-            doctor = User.objects.get(
+            profile = DoctorProfile.objects.select_related("user").get(
                 id=attrs["doctor_id"],
-                role="DOCTOR",
-                is_active=True,
-                is_approved=True,
+                user__role="DOCTOR",
+                user__is_active=True,
+                user__is_approved=True,
             )
-        except User.DoesNotExist:
+            doctor = profile.user
+        except DoctorProfile.DoesNotExist:
             raise ValidationError({"doctor_id": ["Doctor not found or not available."]})
 
         attrs["doctor"] = doctor
+        attrs["doctor_profile"] = profile
         return attrs
 
     def create(self, validated_data):
@@ -232,9 +245,96 @@ class DoctorAppointmentReadSerializer(serializers.ModelSerializer):
 
 
 class DoctorAppointmentUpdateSerializer(serializers.ModelSerializer):
-    status = serializers.ChoiceField(choices=["CONFIRMED", "CANCELLED"])
+    status = serializers.ChoiceField(choices=["CONFIRMED", "CANCELLED", "COMPLETED"])
     notes = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     class Meta:
         model = Appointment
         fields = ["status", "notes"]
+
+
+# ---------------------------------------------------------------------------
+# Review Serializers
+# ---------------------------------------------------------------------------
+
+class ReviewReadSerializer(serializers.ModelSerializer):
+    """Serializer for reading reviews (public / patient-facing)."""
+
+    patient_name = serializers.SerializerMethodField()
+    doctor_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Review
+        fields = [
+            "id",
+            "appointment",
+            "patient_name",
+            "doctor_name",
+            "rating",
+            "comment",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+    def get_patient_name(self, obj: Review) -> str:
+        return f"{obj.patient.first_name} {obj.patient.last_name}"
+
+    def get_doctor_name(self, obj: Review) -> str:
+        return f"Dr. {obj.doctor.user.first_name} {obj.doctor.user.last_name}"
+
+
+class ReviewWriteSerializer(serializers.Serializer):
+    """Serializer for creating a new review on a completed appointment."""
+
+    rating = serializers.IntegerField(min_value=1, max_value=5)
+    comment = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        appointment_pk = self.context.get("appointment_pk")
+
+        if not request or not appointment_pk:
+            raise ValidationError("Missing request context.")
+
+        try:
+            appointment = (
+                Appointment.objects
+                .select_related("patient", "doctor")
+                .get(pk=appointment_pk, patient=request.user)
+            )
+        except Appointment.DoesNotExist:
+            raise ValidationError(
+                {"appointment": "Appointment not found or you are not the patient."}
+            )
+
+        if appointment.status != "COMPLETED":
+            raise ValidationError(
+                {"appointment": "Only completed appointments can be reviewed."}
+            )
+
+        if hasattr(appointment, "review"):
+            raise ValidationError(
+                {"appointment": "This appointment has already been reviewed."}
+            )
+
+        attrs["appointment"] = appointment
+        attrs["doctor"] = appointment.doctor.doctor_profile
+        return attrs
+
+    def create(self, validated_data):
+        request = self.context["request"]
+        return Review.objects.create(
+            appointment=validated_data["appointment"],
+            patient=request.user,
+            doctor=validated_data["doctor"],
+            rating=validated_data["rating"],
+            comment=validated_data.get("comment", ""),
+        )
+
+
+class ReviewUpdateSerializer(serializers.Serializer):
+    """Serializer for editing an existing review."""
+
+    rating = serializers.IntegerField(min_value=1, max_value=5)
+    comment = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
