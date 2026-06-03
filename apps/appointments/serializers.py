@@ -167,17 +167,20 @@ class AppointmentWriteSerializer(serializers.Serializer):
     time = serializers.TimeField(input_formats=["%H:%M", "%H:%M:%S"])
 
     def validate(self, attrs):
+        from apps.doctors.models import DoctorProfile
         try:
-            doctor = User.objects.get(
+            profile = DoctorProfile.objects.select_related("user").get(
                 id=attrs["doctor_id"],
-                role="DOCTOR",
-                is_active=True,
-                is_approved=True,
+                user__role="DOCTOR",
+                user__is_active=True,
+                user__is_approved=True,
             )
-        except User.DoesNotExist:
+            doctor = profile.user
+        except DoctorProfile.DoesNotExist:
             raise ValidationError({"doctor_id": ["Doctor not found or not available."]})
 
         attrs["doctor"] = doctor
+        attrs["doctor_profile"] = profile
         return attrs
 
     def create(self, validated_data):
