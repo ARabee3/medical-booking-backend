@@ -5,6 +5,7 @@ Endpoints:
 - GET /api/doctors/               → list approved doctors
 - GET /api/doctors/<id>/          → single doctor profile
 - GET /api/doctors/<id>/availability/?date=YYYY-MM-DD → free slots
+- GET /api/doctors/<id>/availability/summary/?from=...&to=... → slot counts by date
 """
 
 # Standard library
@@ -16,7 +17,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 # Django
-from django.db.models import Q
+from django.db.models import Q, Count
 
 # Local / project imports
 from apps.doctors.models import DoctorProfile, Availability
@@ -156,5 +157,117 @@ class AvailabilityListView(APIView):
                 "doctor_id": doctor.id,
                 "date": date_str,
                 "slots": slot_times,
+            }
+        )
+
+
+class AvailabilitySummaryView(APIView):
+    """Summary of available slot counts per date for a doctor.
+
+    Query parameters:
+        from (str, required) -- YYYY-MM-DD
+        to   (str, required) -- YYYY-MM-DD
+
+    Response shape:
+        {
+            "doctor_id": 1,
+            "from": "2026-06-01",
+            "to": "2026-06-30",
+            "slots_by_date": {
+                "2026-06-05": 4,
+                "2026-06-06": 3,
+                ...
+            },
+            "total": 56
+        }
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, pk: int):
+        # Validate the doctor exists and is active/approved
+        try:
+            doctor = (
+                DoctorProfile.objects
+                .filter(user__is_active=True, user__is_approved=True)
+                .select_related("user")
+                .get(pk=pk)
+            )
+        except DoctorProfile.DoesNotExist:
+            return Response(
+                {"detail": "Doctor not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Validate date range parameters
+        from_str = request.query_params.get("from")
+        to_str = request.query_params.get("to")
+
+        if not from_str or not to_str:
+            return Response(
+                {"detail": "Both 'from' and 'to' parameters are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            from_date = dt_date.fromisoformat(from_str)
+            to_date = dt_date.fromisoformat(to_str)
+        except ValueError:
+            return Response(
+                {"detail": "Invalid date format. Use YYYY-MM-DD."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Ensure from <= to
+        if from_date > to_date:
+            return Response(
+                {"detail": "'from' date must be before or equal to 'to' date."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Clamp to today — past dates have no availability
+        today = dt_date.today()
+        if to_date < today:
+            return Response(
+                {
+                    "doctor_id": doctor.id,
+                    "from": from_str,
+                    "to": to_str,
+                    "slots_by_date": {},
+                    "total": 0,
+                }
+            )
+
+        if from_date < today:
+            from_date = today
+
+        # Aggregate available slot counts per date
+        slot_counts = (
+            Availability.objects
+            .filter(
+                doctor=doctor,
+                date__gte=from_date,
+                date__lte=to_date,
+                is_booked=False,
+            )
+            .values("date")
+            .annotate(count=Count("id"))
+            .order_by("date")
+        )
+
+        slots_by_date = {}
+        total = 0
+        for entry in slot_counts:
+            date_key = entry["date"].isoformat()
+            slots_by_date[date_key] = entry["count"]
+            total += entry["count"]
+
+        return Response(
+            {
+                "doctor_id": doctor.id,
+                "from": from_str,
+                "to": to_str,
+                "slots_by_date": slots_by_date,
+                "total": total,
             }
         )
